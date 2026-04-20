@@ -1,0 +1,152 @@
+// ====================================================
+// FB_PumpRotation
+// إدارة الـ Standby Pump وعملية الـ Rotation كل 72 ساعة
+// ====================================================
+
+FUNCTION_BLOCK "FB_PumpRotation"
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'WaterStation'
+VERSION : '1.0'
+
+VAR_INPUT
+    iRequiredPumps  : INT;      // عدد الطلمبات اللي الضغط محتاجها
+    bAutoMode       : BOOL;     // السيستم في Automatic
+    rRotationHrs    : REAL;     // ساعات قبل الـ Rotation (72 افتراضي)
+END_VAR
+
+VAR_OUTPUT
+    bAutoRun        : ARRAY[1..5] OF BOOL;  // أوامر تشغيل Auto لكل طلمبة
+    iStandbyPump    : INT;                  // رقم الـ Standby Pump الحالي
+    bRotationDone   : BOOL;                 // الـ Rotation اتنفذ (للـ SCADA)
+END_VAR
+
+VAR
+    // Active pumps list - ترتيب التشغيل
+    // الـ Queue ده بيحدد مين يشتغل الأول
+    iRunQueue       : ARRAY[1..5] OF INT;   // [1]=الأول يشتغل، [5]=الـ Standby
+    bQueueInit      : BOOL  := FALSE;
+    
+    bRotationTrigger: BOOL;
+    bRotation_Prev  : BOOL;
+END_VAR
+
+VAR_TEMP
+    i               : INT;
+    iMaxHoursIdx    : INT;
+    rMaxHours       : REAL;
+    iTemp           : INT;
+    iFaultPump      : INT;      // الطلمبة اللي عملت فولت
+    bFaultFound     : BOOL;
+    iActivePumps    : INT;
+    iStandbyInQueue : INT;
+END_VAR
+
+BEGIN
+    // --------------------------------------------------------
+    // تهيئة الـ Queue أول مرة
+    // --------------------------------------------------------
+    IF NOT bQueueInit THEN
+        FOR i := 1 TO 5 DO
+            iRunQueue[i] := i;
+        END_FOR;
+        bQueueInit  := TRUE;
+        iStandbyPump:= 5;   // الطلمبة 5 أول Standby
+    END_IF;
+    
+    // --------------------------------------------------------
+    // فحص الـ Faults في Auto - استبدال فوري بالـ Standby
+    // --------------------------------------------------------
+    bFaultFound := FALSE;
+    iFaultPump  := 0;
+    
+    IF bAutoMode THEN
+        FOR i := 1 TO 5 DO
+            IF "DB_PumpData".Pump[i].bIsFault AND 
+               "DB_PumpData".Pump[i].bIsRunning THEN
+                bFaultFound := TRUE;
+                iFaultPump  := i;
+            END_IF;
+        END_FOR;
+        
+        IF bFaultFound AND iFaultPump > 0 THEN
+            // وقف الطلمبة اللي عملت فولت وحط الـ Standby مكانها
+            // عمل Swap في الـ Queue
+            FOR i := 1 TO 5 DO
+                IF iRunQueue[i] = iFaultPump THEN
+                    // امسح الطلمبة دي من مكانها وحط الـ Standby
+                    iRunQueue[i]    := iStandbyPump;
+                    iStandbyPump    := iFaultPump;
+                END_IF;
+            END_FOR;
+            "DB_PumpData".Pump[iFaultPump].bIsStandby := TRUE;
+        END_IF;
+    END_IF;
+    
+    // --------------------------------------------------------
+    // Rotation كل 72 ساعة - الطلمبة الأكثر تشغيلاً تخرج
+    // --------------------------------------------------------
+    // ابحث عن الطلمبة الأكثر ساعات منذ آخر Rotation
+    rMaxHours    := 0.0;
+    iMaxHoursIdx := 0;
+    
+    FOR i := 1 TO 4 DO    // بس الطلمبات الشغالة (مش الـ Standby)
+        IF "DB_PumpData".Pump[iRunQueue[i]].rHoursSinceRotation > rMaxHours THEN
+            rMaxHours    := "DB_PumpData".Pump[iRunQueue[i]].rHoursSinceRotation;
+            iMaxHoursIdx := i;
+        END_IF;
+    END_FOR;
+    
+    bRotationTrigger := (rMaxHours >= rRotationHrs) AND bAutoMode;
+    
+    IF bRotationTrigger AND NOT bRotation_Prev THEN
+        IF iMaxHoursIdx > 0 THEN
+            // Swap: الطلمبة الأكثر تشغيلاً تروح Standby
+            iTemp                       := iRunQueue[iMaxHoursIdx];
+            iRunQueue[iMaxHoursIdx]     := iStandbyPump;
+            iStandbyPump                := iTemp;
+            
+            // صفر عداد الـ Rotation للطلمبات الجديدة
+            FOR i := 1 TO 5 DO
+                "DB_PumpData".Pump[iRunQueue[i]].rHoursSinceRotation := 0.0;
+            END_FOR;
+            
+            bRotationDone := TRUE;
+        END_IF;
+    ELSE
+        bRotationDone := FALSE;
+    END_IF;
+    
+    bRotation_Prev := bRotationTrigger;
+    iStandbyPump   := iStandbyPump;    // حدث الـ Output
+    
+    // --------------------------------------------------------
+    // تحديد أوامر التشغيل لكل طلمبة
+    // --------------------------------------------------------
+    // أولاً كلير الكل
+    FOR i := 1 TO 5 DO
+        bAutoRun[i]                         := FALSE;
+        "DB_PumpData".Pump[i].bIsStandby    := FALSE;
+        "DB_PumpData".Pump[i].bIsEnabled    := TRUE;
+    END_FOR;
+    
+    // الـ Standby Pump
+    "DB_PumpData".Pump[iStandbyPump].bIsStandby := TRUE;
+    
+    IF NOT bAutoMode THEN
+        RETURN;     // في Manual: الأوامر من الـ FB_PumpControl مباشرة
+    END_IF;
+    
+    // تشغيل عدد الطلمبات المطلوبة من أول القائمة
+    iActivePumps := iRequiredPumps;
+    IF iActivePumps > 4 THEN iActivePumps := 4; END_IF;
+    IF iActivePumps < 0 THEN iActivePumps := 0; END_IF;
+    
+    FOR i := 1 TO iActivePumps DO
+        bAutoRun[iRunQueue[i]] := TRUE;
+    END_FOR;
+    
+    // لو الطلمبة الأولى في الـ Queue عملت Fault وما فيش بديل
+    // → الـ Standby تدخل فوراً
+    // (هذا المنطق اتعالج فوق في قسم الـ Fault)
+
+END_FUNCTION_BLOCK

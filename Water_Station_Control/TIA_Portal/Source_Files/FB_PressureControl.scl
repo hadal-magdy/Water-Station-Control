@@ -1,0 +1,154 @@
+// ====================================================
+// FB_PressureControl
+// منطق التحكم في الضغط - تحديد عدد الطلمبات وسرعتها
+// ====================================================
+
+FUNCTION_BLOCK "FB_PressureControl"
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'WaterStation'
+VERSION : '1.0'
+
+VAR_INPUT
+    rPressure_Raw   : INT;      // Raw value من الـ AI (0-27648)
+    bAutoMode       : BOOL;     // السيستم في Auto
+    rTarget         : REAL;     // الضغط المستهدف
+    rDeadband       : REAL;     // Deadband ±
+    rMinSpeed       : REAL;
+    rMaxSpeed       : REAL;
+    rKp             : REAL;     // PID Proportional gain
+    rKi             : REAL;     // PID Integral gain
+END_VAR
+
+VAR_OUTPUT
+    rPressure_Bar   : REAL;     // الضغط بالبار
+    iRequiredPumps  : INT;      // عدد الطلمبات المطلوبة
+    rSpeedSetpoint  : REAL;     // السرعة % لكل الطلمبات
+    bHighPressure   : BOOL;     // تجاوز 9.5 بار - تحذير
+    bLowPressure    : BOOL;     // أقل من 0.5 بار - تحذير
+END_VAR
+
+VAR
+    // PID
+    rIntegral       : REAL  := 0.0;
+    rPrevError      : REAL  := 0.0;
+    rPID_Output     : REAL  := 50.0;
+    
+    // Hysteresis لمنع الـ Hunting
+    rHystUp         : REAL  := 0.3;    // هستيريسيس رفع
+    rHystDown       : REAL  := 0.3;    // هستيريسيس خفض
+    
+    // تأخير تغيير عدد الطلمبات
+    tPumpChangeDelay: TON;
+    bDelayRunning   : BOOL;
+    iDesiredPumps   : INT;
+END_VAR
+
+VAR_TEMP
+    rError          : REAL;
+    rNewPID         : REAL;
+    rPressureCalc   : REAL;
+    iCalcPumps      : INT;
+END_VAR
+
+BEGIN
+    // --------------------------------------------------------
+    // تحويل Raw AI إلى بار
+    // 4mA = 5530 raw → 0 bar
+    // 20mA = 27648 raw → 10 bar
+    // --------------------------------------------------------
+    rPressureCalc := REAL(rPressure_Raw - 5530) / REAL(27648 - 5530) * 10.0;
+    
+    // Clamp
+    IF rPressureCalc < 0.0 THEN rPressureCalc := 0.0; END_IF;
+    IF rPressureCalc > 10.0 THEN rPressureCalc := 10.0; END_IF;
+    
+    rPressure_Bar := rPressureCalc;
+    
+    // --------------------------------------------------------
+    // Pressure Alarms
+    // --------------------------------------------------------
+    bHighPressure := (rPressureCalc > 9.5);
+    bLowPressure  := (rPressureCalc < 0.5) AND bAutoMode;
+    
+    IF NOT bAutoMode THEN
+        iRequiredPumps := 0;
+        rSpeedSetpoint := 0.0;
+        RETURN;
+    END_IF;
+    
+    // --------------------------------------------------------
+    // تحديد عدد الطلمبات بناءً على الضغط
+    // مع Hysteresis لمنع التذبذب
+    // --------------------------------------------------------
+    iCalcPumps := iRequiredPumps;   // ابدأ من القيمة الحالية
+    
+    // منطق الرفع (بنضيف طلمبات)
+    IF rPressureCalc < 2.5 THEN
+        iCalcPumps := 4;
+    ELSIF rPressureCalc < (5.0 - rHystDown) THEN
+        IF iCalcPumps < 3 THEN iCalcPumps := 3; END_IF;
+    ELSIF rPressureCalc < (7.5 - rHystDown) THEN
+        IF iCalcPumps < 2 THEN iCalcPumps := 2; END_IF;
+    ELSIF rPressureCalc < (10.0 - rHystDown) THEN
+        IF iCalcPumps < 1 THEN iCalcPumps := 1; END_IF;
+    END_IF;
+    
+    // منطق الخفض (بنشيل طلمبات)
+    IF rPressureCalc > (7.5 + rHystUp) THEN
+        IF iCalcPumps > 1 THEN iCalcPumps := 1; END_IF;
+    ELSIF rPressureCalc > (5.0 + rHystUp) THEN
+        IF iCalcPumps > 2 THEN iCalcPumps := 2; END_IF;
+    ELSIF rPressureCalc > (2.5 + rHystUp) THEN
+        IF iCalcPumps > 3 THEN iCalcPumps := 3; END_IF;
+    END_IF;
+    
+    // Clamp عدد الطلمبات
+    IF iCalcPumps < 1 THEN iCalcPumps := 1; END_IF;
+    IF iCalcPumps > 4 THEN iCalcPumps := 4; END_IF;
+    
+    // تأخير 5 ثواني قبل ما نغير عدد الطلمبات عشان نتجنب التذبذب
+    IF iCalcPumps <> iRequiredPumps THEN
+        IF NOT bDelayRunning THEN
+            iDesiredPumps   := iCalcPumps;
+            bDelayRunning   := TRUE;
+        END_IF;
+    ELSE
+        bDelayRunning := FALSE;
+    END_IF;
+    
+    tPumpChangeDelay(IN := bDelayRunning, PT := T#5s);
+    
+    IF tPumpChangeDelay.Q THEN
+        iRequiredPumps  := iDesiredPumps;
+        bDelayRunning   := FALSE;
+        tPumpChangeDelay(IN := FALSE, PT := T#5s);
+    END_IF;
+    
+    // --------------------------------------------------------
+    // PID للتحكم في السرعة - بيخلي الضغط يوصل للـ Target
+    // --------------------------------------------------------
+    rError := rTarget - rPressureCalc;
+    
+    // Integral
+    rIntegral := rIntegral + rKi * rError * 0.1;    // 0.1s scan time
+    
+    // Anti-windup
+    IF rIntegral > 100.0 THEN rIntegral := 100.0; END_IF;
+    IF rIntegral < 0.0 THEN rIntegral := 0.0; END_IF;
+    
+    // PID Output
+    rNewPID := 50.0 + rKp * rError + rIntegral;
+    
+    // Clamp السرعة
+    IF rNewPID < rMinSpeed THEN rNewPID := rMinSpeed; END_IF;
+    IF rNewPID > rMaxSpeed THEN rNewPID := rMaxSpeed; END_IF;
+    
+    // Deadband - لو في الـ Deadband، سيب السرعة كما هي
+    IF ABS(rError) <= rDeadband THEN
+        rNewPID := rPID_Output;     // سيب السرعة
+    END_IF;
+    
+    rPID_Output    := rNewPID;
+    rSpeedSetpoint := rPID_Output;
+    
+END_FUNCTION_BLOCK

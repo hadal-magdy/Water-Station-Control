@@ -1,0 +1,160 @@
+// ====================================================
+// FC_ModbusComm
+// تواصل Modbus RTU مع درايفات ATV312
+// بيتنفذ كل 100ms في OB35
+//
+// ATV312 Holding Registers:
+//   Read  3201 → Status Word (ETA)
+//   Read  3202 → Output Frequency (Hz × 10)
+//   Read  3204 → Motor Current (A × 10)
+//   Write 8501 → Control Word (CMD)
+//   Write 8502 → Speed Reference (Hz × 10)
+// ====================================================
+
+FUNCTION "FC_ModbusComm" : VOID
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'WaterStation'
+VERSION : '1.0'
+
+VAR_TEMP
+    i               : INT;
+    mbStatus        : INT;
+END_VAR
+
+// Static vars للـ Modbus State Machine
+VAR_STAT
+    iCurrentPump    : INT   := 1;   // الطلمبة الحالية في الدور
+    iCommStep       : INT   := 0;   // 0=Write CMD, 1=Write Speed, 2=Read Status
+    bMB_Busy        : BOOL  := FALSE;
+    iRetryCount     : INT   := 0;
+    
+    // MB_MASTER instance vars
+    MB_REQ          : BOOL  := FALSE;
+    MB_DONE         : BOOL;
+    MB_ERROR        : BOOL;
+    MB_STATUS       : WORD;
+    iWriteData      : INT;
+    iReadBuffer     : ARRAY[1..3] OF INT;
+END_VAR
+
+BEGIN
+    // --------------------------------------------------------
+    // State Machine: كل Scan نتعامل مع خطوة واحدة
+    // الـ Cycle: لكل طلمبة → Write CMD → Write Speed → Read Status
+    //           بعدين نروح للطلمبة الجاية
+    // --------------------------------------------------------
+    
+    CASE iCommStep OF
+        
+        0:  // Write Control Word للطلمبة الحالية
+            iWriteData := "DB_PumpData".Pump[iCurrentPump].iControlWord;
+            
+            // استخدم MB_MASTER من TIA Portal
+            // الـ Hardware ID للـ CM1241 = 269 (حسب الـ Config)
+            "MB_MASTER_DB"(
+                REQ         := TRUE,
+                MB_ADDR     := "DB_PumpData".Pump[iCurrentPump].iModbusAddress,
+                MODE        := 1,           // Write Single Register (FC6)
+                DATA_ADDR   := 8501,        // CMD Register
+                DATA_LEN    := 1,
+                DATA_PTR    := iWriteData,
+                DONE        => MB_DONE,
+                ERROR       => MB_ERROR,
+                STATUS      => MB_STATUS
+            );
+            
+            IF MB_DONE THEN
+                iRetryCount := 0;
+                iCommStep   := 1;
+            ELSIF MB_ERROR THEN
+                iRetryCount := iRetryCount + 1;
+                IF iRetryCount > 3 THEN
+                    iCommStep   := 1;   // Skip وامشي
+                    iRetryCount := 0;
+                END_IF;
+            END_IF;
+        
+        1:  // Write Speed Reference
+            iWriteData := "DB_PumpData".Pump[iCurrentPump].iSpeedWord;
+            
+            "MB_MASTER_DB"(
+                REQ         := TRUE,
+                MB_ADDR     := "DB_PumpData".Pump[iCurrentPump].iModbusAddress,
+                MODE        := 1,
+                DATA_ADDR   := 8502,        // Speed Register
+                DATA_LEN    := 1,
+                DATA_PTR    := iWriteData,
+                DONE        => MB_DONE,
+                ERROR       => MB_ERROR,
+                STATUS      => MB_STATUS
+            );
+            
+            IF MB_DONE OR MB_ERROR THEN
+                iCommStep := 2;
+            END_IF;
+        
+        2:  // Read Status Word + Frequency + Current
+            "MB_MASTER_DB"(
+                REQ         := TRUE,
+                MB_ADDR     := "DB_PumpData".Pump[iCurrentPump].iModbusAddress,
+                MODE        := 0,           // Read Holding Registers (FC3)
+                DATA_ADDR   := 3201,        // Status Word
+                DATA_LEN    := 3,           // 3201, 3202, 3204
+                DATA_PTR    := iReadBuffer,
+                DONE        => MB_DONE,
+                ERROR       => MB_ERROR,
+                STATUS      => MB_STATUS
+            );
+            
+            IF MB_DONE THEN
+                // حفظ البيانات المقروءة
+                "DB_PumpData".Pump[iCurrentPump].iStatusWord   := iReadBuffer[1];
+                "DB_PumpData".Pump[iCurrentPump].iOutputFreq   := iReadBuffer[2];
+                "DB_PumpData".Pump[iCurrentPump].iMotorCurrent := iReadBuffer[3];
+                
+                // Run Feedback من الـ Status Word
+                // ATV312: Bit 2 في ETA = Operation Enabled = Running
+                "DB_PumpData".Pump[iCurrentPump].bRunFeedback := 
+                    (iReadBuffer[1] AND 16#0004) <> 0;
+                
+                // السرعة الفعلية
+                "DB_PumpData".Pump[iCurrentPump].rActualSpeed := 
+                    REAL(iReadBuffer[2]) / 500.0 * 100.0;
+                
+                // Communication Error Flag
+                "DB_PumpData".Pump[iCurrentPump].iLastFaultCode := 0;
+                
+                iCommStep := 0;
+                
+                // روح للطلمبة الجاية
+                iCurrentPump := iCurrentPump + 1;
+                IF iCurrentPump > 5 THEN
+                    iCurrentPump := 1;
+                END_IF;
+                
+            ELSIF MB_ERROR THEN
+                // Comm Error - ممكن الـ Drive مش موجود أو Cable مقطوع
+                "DB_PumpData".Pump[iCurrentPump].iLastFaultCode := 
+                    WORD_TO_INT(MB_STATUS);
+                iCommStep := 0;
+                iCurrentPump := iCurrentPump + 1;
+                IF iCurrentPump > 5 THEN
+                    iCurrentPump := 1;
+                END_IF;
+            END_IF;
+    
+    END_CASE;
+    
+    // --------------------------------------------------------
+    // ملاحظة مهمة للـ Implementation:
+    // "MB_MASTER_DB" هو الـ Instance DB اللي بتنشئه لـ MB_MASTER
+    // في TIA Portal:
+    //   Instructions → Communication → Modbus (RTU) → MB_MASTER
+    //   اسحبه في OB35 وهو هيطلب منك تسمي الـ Instance DB
+    //   سميه "MB_MASTER_DB"
+    // Hardware Identifier للـ CM1241:
+    //   Device Configuration → CM1241 → Properties → 
+    //   System Constants → Hardware Identifier
+    // --------------------------------------------------------
+
+END_FUNCTION

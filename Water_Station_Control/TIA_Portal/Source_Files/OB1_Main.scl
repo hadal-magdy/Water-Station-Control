@@ -1,0 +1,202 @@
+// ====================================================
+// OB1 - Main Program
+// بيتنفذ كل Scan Cycle (~10-20ms)
+// ====================================================
+
+ORGANIZATION_BLOCK "Main"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : '0.1'
+
+// Instance DBs للـ Function Blocks
+VAR
+    PumpCtrl_1  : "FB_PumpControl";
+    PumpCtrl_2  : "FB_PumpControl";
+    PumpCtrl_3  : "FB_PumpControl";
+    PumpCtrl_4  : "FB_PumpControl";
+    PumpCtrl_5  : "FB_PumpControl";
+    
+    PressCtrl   : "FB_PressureControl";
+    PumpRotate  : "FB_PumpRotation";
+END_VAR
+
+BEGIN
+    // ============================================================
+    // STEP 1: قراءة الـ Inputs من الحقل → DB_PumpData
+    // ============================================================
+    
+    // وضع التشغيل العام (Selector الرئيسي)
+    "DB_SystemConfig".bMasterAuto := %I0.0;   // I0.0 = Auto/Manual selector
+    
+    // Pump 1 Inputs
+    "DB_PumpData".Pump[1].bManualSelector   := %I0.1;   // Manual/Auto switch P1
+    "DB_PumpData".Pump[1].bStartButton      := %I0.2;   // Start P1
+    "DB_PumpData".Pump[1].bStopButton       := %I0.3;   // Stop P1 (NC)
+    "DB_PumpData".Pump[1].bOverload         := %I0.4;   // Overload P1 (NC)
+    
+    // Pump 2 Inputs
+    "DB_PumpData".Pump[2].bManualSelector   := %I0.5;
+    "DB_PumpData".Pump[2].bStartButton      := %I0.6;
+    "DB_PumpData".Pump[2].bStopButton       := %I0.7;
+    "DB_PumpData".Pump[2].bOverload         := %I1.0;
+    
+    // Pump 3 Inputs
+    "DB_PumpData".Pump[3].bManualSelector   := %I1.1;
+    "DB_PumpData".Pump[3].bStartButton      := %I1.2;
+    "DB_PumpData".Pump[3].bStopButton       := %I1.3;
+    "DB_PumpData".Pump[3].bOverload         := %I1.4;
+    
+    // Pump 4 Inputs
+    "DB_PumpData".Pump[4].bManualSelector   := %I1.5;
+    "DB_PumpData".Pump[4].bStartButton      := %I1.6;
+    "DB_PumpData".Pump[4].bStopButton       := %I1.7;
+    "DB_PumpData".Pump[4].bOverload         := %I2.0;
+    
+    // Pump 5 Inputs
+    "DB_PumpData".Pump[5].bManualSelector   := %I2.1;
+    "DB_PumpData".Pump[5].bStartButton      := %I2.2;
+    "DB_PumpData".Pump[5].bStopButton       := %I2.3;
+    "DB_PumpData".Pump[5].bOverload         := %I2.4;
+    
+    // Pressure Transmitter (SM1231 AI → %IW64)
+    "DB_SystemConfig".rPressure_Raw := %IW64;
+    
+    // ============================================================
+    // STEP 2: Pressure Control - تحديد عدد الطلمبات والسرعة
+    // ============================================================
+    PressCtrl(
+        rPressure_Raw   := "DB_SystemConfig".rPressure_Raw,
+        bAutoMode       := "DB_SystemConfig".bMasterAuto,
+        rTarget         := "DB_SystemConfig".rPressure_Target,
+        rDeadband       := "DB_SystemConfig".rPressure_Deadband,
+        rMinSpeed       := "DB_SystemConfig".rMinSpeed,
+        rMaxSpeed       := "DB_SystemConfig".rMaxSpeed,
+        rKp             := "DB_SystemConfig".rPID_Kp,
+        rKi             := "DB_SystemConfig".rPID_Ki,
+        rPressure_Bar   => "DB_SystemConfig".rPressure_Bar,
+        iRequiredPumps  => "DB_SystemConfig".iRequiredPumps,
+        rSpeedSetpoint  => "DB_SystemConfig".rPID_Output
+    );
+    
+    // ============================================================
+    // STEP 3: Rotation Logic - تحديد مين يشتغل ومين Standby
+    // ============================================================
+    PumpRotate(
+        iRequiredPumps  := "DB_SystemConfig".iRequiredPumps,
+        bAutoMode       := "DB_SystemConfig".bMasterAuto,
+        rRotationHrs    := "DB_SystemConfig".rRotationHours
+    );
+    
+    "DB_SystemConfig".iStandbyPump := PumpRotate.iStandbyPump;
+    
+    // ============================================================
+    // STEP 4: تشغيل كل طلمبة
+    // ============================================================
+    PumpCtrl_1(
+        iPumpIndex      := 1,
+        bMasterAuto     := "DB_SystemConfig".bMasterAuto,
+        bAutoRunCmd     := PumpRotate.bAutoRun[1],
+        rAutoSpeed      := "DB_SystemConfig".rPID_Output,
+        rManualSpeed    := "DB_SystemConfig".rManualSpeed,
+        rRampRate       := "DB_SystemConfig".rSpeedRampRate,
+        bFaultReset     := %I2.5    // Fault Reset button عام
+    );
+    
+    PumpCtrl_2(
+        iPumpIndex      := 2,
+        bMasterAuto     := "DB_SystemConfig".bMasterAuto,
+        bAutoRunCmd     := PumpRotate.bAutoRun[2],
+        rAutoSpeed      := "DB_SystemConfig".rPID_Output,
+        rManualSpeed    := "DB_SystemConfig".rManualSpeed,
+        rRampRate       := "DB_SystemConfig".rSpeedRampRate,
+        bFaultReset     := %I2.5
+    );
+    
+    PumpCtrl_3(
+        iPumpIndex      := 3,
+        bMasterAuto     := "DB_SystemConfig".bMasterAuto,
+        bAutoRunCmd     := PumpRotate.bAutoRun[3],
+        rAutoSpeed      := "DB_SystemConfig".rPID_Output,
+        rManualSpeed    := "DB_SystemConfig".rManualSpeed,
+        rRampRate       := "DB_SystemConfig".rSpeedRampRate,
+        bFaultReset     := %I2.5
+    );
+    
+    PumpCtrl_4(
+        iPumpIndex      := 4,
+        bMasterAuto     := "DB_SystemConfig".bMasterAuto,
+        bAutoRunCmd     := PumpRotate.bAutoRun[4],
+        rAutoSpeed      := "DB_SystemConfig".rPID_Output,
+        rManualSpeed    := "DB_SystemConfig".rManualSpeed,
+        rRampRate       := "DB_SystemConfig".rSpeedRampRate,
+        bFaultReset     := %I2.5
+    );
+    
+    PumpCtrl_5(
+        iPumpIndex      := 5,
+        bMasterAuto     := "DB_SystemConfig".bMasterAuto,
+        bAutoRunCmd     := PumpRotate.bAutoRun[5],
+        rAutoSpeed      := "DB_SystemConfig".rPID_Output,
+        rManualSpeed    := "DB_SystemConfig".rManualSpeed,
+        rRampRate       := "DB_SystemConfig".rSpeedRampRate,
+        bFaultReset     := %I2.5
+    );
+    
+    // ============================================================
+    // STEP 5: كتابة الـ Outputs للحقل
+    // ============================================================
+    
+    // Run Lamps
+    %Q0.0 := "DB_PumpData".Pump[1].bRunLamp;
+    %Q0.1 := "DB_PumpData".Pump[2].bRunLamp;
+    %Q0.2 := "DB_PumpData".Pump[3].bRunLamp;
+    %Q0.3 := "DB_PumpData".Pump[4].bRunLamp;
+    %Q0.4 := "DB_PumpData".Pump[5].bRunLamp;
+    
+    // Fault Lamps
+    %Q0.5 := "DB_PumpData".Pump[1].bFaultLamp;
+    %Q0.6 := "DB_PumpData".Pump[2].bFaultLamp;
+    %Q0.7 := "DB_PumpData".Pump[3].bFaultLamp;
+    %Q1.0 := "DB_PumpData".Pump[4].bFaultLamp;
+    %Q1.1 := "DB_PumpData".Pump[5].bFaultLamp;
+    
+    // System Alarm Lamp
+    %Q1.2 := "DB_SystemConfig".bSystemFault;
+    
+    // ============================================================
+    // STEP 6: System Fault Summary
+    // ============================================================
+    "DB_SystemConfig".bSystemFault := 
+        "DB_PumpData".Pump[1].bIsFault OR
+        "DB_PumpData".Pump[2].bIsFault OR
+        "DB_PumpData".Pump[3].bIsFault OR
+        "DB_PumpData".Pump[4].bIsFault OR
+        "DB_PumpData".Pump[5].bIsFault;
+    
+    // Active Pumps Count
+    "DB_SystemConfig".iActivePumps := 
+        BOOL_TO_INT("DB_PumpData".Pump[1].bIsRunning) +
+        BOOL_TO_INT("DB_PumpData".Pump[2].bIsRunning) +
+        BOOL_TO_INT("DB_PumpData".Pump[3].bIsRunning) +
+        BOOL_TO_INT("DB_PumpData".Pump[4].bIsRunning) +
+        BOOL_TO_INT("DB_PumpData".Pump[5].bIsRunning);
+
+END_ORGANIZATION_BLOCK
+
+
+// ====================================================
+// OB35 - Cyclic Interrupt (100ms)
+// الـ Modbus بيتشغل هنا بشكل دوري
+// ====================================================
+
+ORGANIZATION_BLOCK "Cyclic_Interrupt" : OB35
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : '0.1'
+
+BEGIN
+    // Modbus Communication مع ATV312 Drives
+    "FC_ModbusComm"();
+    
+    // ملاحظة: في TIA Portal ضبط OB35 على 100ms:
+    // Properties → Cyclic Interrupt → Cycle time = 100ms
+
+END_ORGANIZATION_BLOCK

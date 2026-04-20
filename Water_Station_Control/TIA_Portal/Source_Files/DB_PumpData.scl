@@ -1,0 +1,86 @@
+// ====================================================
+// DB_PumpData  -  بيانات الطلمبات الخمسة
+// كل عنصر في الـ Array بيخص طلمبة (Index 1 لـ 5)
+// ====================================================
+
+TYPE "UDT_PumpStatus"
+STRUCT
+    // --- Inputs (من الحقل) ---
+    bManualSelector     : BOOL;     // مفتاح Manual/Auto للطلمبة
+    bStartButton        : BOOL;     // زرار Start (NO)
+    bStopButton         : BOOL;     // زرار Stop (NC)
+    bOverload           : BOOL;     // Overload relay (NC = TRUE لما يكون OK)
+    bRunFeedback        : BOOL;     // تأكيد التشغيل من الـ Drive
+
+    // --- Outputs (للحقل) ---
+    bRunCommand         : BOOL;     // أمر تشغيل للـ Drive
+    bRunLamp            : BOOL;     // لمبة Run (خضرا)
+    bFaultLamp          : BOOL;     // لمبة Fault (حمرا)
+    
+    // --- Modbus للـ ATV312 ---
+    iModbusAddress      : INT;      // Slave address (1-5)
+    iControlWord        : INT;      // CMD register → 8501
+    iSpeedWord          : INT;      // Speed register → 8502  (Hz × 10)
+    iStatusWord         : INT;      // ETA register ← 3201
+    iOutputFreq         : INT;      // Output freq ← 3202
+    iMotorCurrent       : INT;      // Current ← 3204
+    
+    // --- Status ---
+    bIsRunning          : BOOL;     // الطلمبة شغالة
+    bIsFault            : BOOL;     // في فولت
+    bIsStandby          : BOOL;     // في وضع Standby
+    bIsEnabled          : BOOL;     // مسموح تشتغل
+    bAutoMode           : BOOL;     // وضع Auto للطلمبة دي
+    
+    // --- Speed ---
+    rSpeedSetpoint      : REAL;     // الـ Setpoint بالـ %
+    rActualSpeed        : REAL;     // السرعة الفعلية %
+    rCurrentRamp        : REAL;     // السرعة الحالية أثناء الـ Ramp
+    
+    // --- Hour Counter ---
+    rRunningHours       : REAL;     // ساعات التشغيل الكلية
+    rHoursSinceRotation : REAL;     // ساعات من آخر Rotation
+    tRunTimer           : TIME;     // مؤقت داخلي للـ Scan
+    
+    // --- Fault History ---
+    iLastFaultCode      : INT;
+    dtLastFaultTime     : DATE_AND_TIME;
+    iStartCount         : INT;      // عداد مرات التشغيل
+    
+END_STRUCT
+END_TYPE
+
+DATA_BLOCK "DB_PumpData"
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'WaterStation'
+VERSION : '1.0'
+
+VAR
+    Pump    : ARRAY[1..5] OF "UDT_PumpStatus";
+END_VAR
+
+BEGIN
+    // ضبط الـ Modbus Addresses
+    Pump[1].iModbusAddress := 1;
+    Pump[2].iModbusAddress := 2;
+    Pump[3].iModbusAddress := 3;
+    Pump[4].iModbusAddress := 4;
+    Pump[5].iModbusAddress := 5;
+    
+    // الطلمبة 5 تبدأ كـ Standby
+    Pump[5].bIsStandby := TRUE;
+    
+    // Stop buttons NC → ابتداءً TRUE
+    Pump[1].bStopButton := TRUE;
+    Pump[2].bStopButton := TRUE;
+    Pump[3].bStopButton := TRUE;
+    Pump[4].bStopButton := TRUE;
+    Pump[5].bStopButton := TRUE;
+    
+    // Overloads NC → ابتداءً TRUE (OK)
+    Pump[1].bOverload := TRUE;
+    Pump[2].bOverload := TRUE;
+    Pump[3].bOverload := TRUE;
+    Pump[4].bOverload := TRUE;
+    Pump[5].bOverload := TRUE;
+END_DATA_BLOCK

@@ -1,0 +1,53 @@
+DATA_BLOCK "DB_SystemConfig"
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'WaterStation'
+FAMILY : 'PumpCtrl'
+VERSION : '1.0'
+
+VAR
+    // ---- وضع التشغيل ----
+    bMasterAuto         : BOOL  := FALSE;   // TRUE=Auto, FALSE=Manual (من الـ Selector الرئيسي)
+    
+    // ---- Pressure Setpoints (bar) ----
+    rPressure_Raw       : INT   := 0;       // Raw AI value من الـ Transmitter
+    rPressure_Bar       : REAL  := 0.0;     // الضغط الفعلي بالبار
+    
+    rSP_1Pump_Low       : REAL  := 7.5;     // فوق 7.5 → طلمبة واحدة
+    rSP_2Pump_Low       : REAL  := 5.0;     // فوق 5.0 → طلمبتين
+    rSP_3Pump_Low       : REAL  := 2.5;     // فوق 2.5 → 3 طلمبات
+    // تحت 2.5 → 4 طلمبات
+    
+    rPressure_Target    : REAL  := 8.0;     // الضغط المستهدف للـ PID
+    rPressure_Deadband  : REAL  := 0.2;     // نطاق التسامح ±0.2 بار
+    
+    // ---- عدد الطلمبات المطلوبة ----
+    iRequiredPumps      : INT   := 0;       // عدد الطلمبات المطلوبة الآن
+    iActivePumps        : INT   := 0;       // عدد الطلمبات الشغالة فعلاً
+    
+    // ---- Standby & Rotation ----
+    iStandbyPump        : INT   := 5;       // رقم طلمبة الـ Standby (1-5)
+    rRotationHours      : REAL  := 72.0;    // ساعات قبل الـ Rotation
+    
+    // ---- Speed Control ----
+    rSpeedRampRate      : REAL  := 2.0;     // % في الثانية - معدل زيادة السرعة
+    rMinSpeed           : REAL  := 30.0;    // أدنى سرعة % 
+    rMaxSpeed           : REAL  := 100.0;   // أقصى سرعة %
+    rManualSpeed        : REAL  := 50.0;    // سرعة الـ Manual الثابتة %
+    
+    // ---- PID Parameters ----
+    rPID_Kp             : REAL  := 5.0;
+    rPID_Ki             : REAL  := 0.5;
+    rPID_Output         : REAL  := 0.0;
+    
+    // ---- System Status ----
+    bSystemFault        : BOOL  := FALSE;   // أي فولت في السيستم
+    iSystemAlarmCode    : INT   := 0;
+    
+    // ---- Timers / Counters ----
+    tScanTime           : TIME  := T#100ms;
+    
+END_VAR
+
+BEGIN
+    // القيم الابتدائية اتحددت فوق في تعريف المتغيرات
+END_DATA_BLOCK
